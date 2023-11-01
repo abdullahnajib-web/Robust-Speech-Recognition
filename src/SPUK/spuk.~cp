@@ -1,0 +1,615 @@
+#include "spuk.h"
+
+/* KAMUS NAMA PEUBAH */
+#define SPUK_N   240   /* panjang sinyal tiap frame */
+#define SPUK_M   80    /* panjang selisih antar frame */
+#define SPUK_p   10    /* panjang orde koefisien lpc */
+#define SPUK_Q   15    /* pajang orde ceptral */
+#define SPUK_pj  8000  /* panjang sinyal suara */
+#define SPUK_Fs  8000  /* frekuensi sampel */
+#define SPUK_A   8     /* amplitudo */
+
+char berhenti; /* untuk penghentian pada proses pelatihan dan pengenalan
+                  jika 0 berhenti jika bukan 0 tidak berhenti
+               */
+
+unsigned IMIN(float *Buf,unsigned len)
+{
+  /* mencari index data minimum
+
+  */
+  unsigned IMin,i;
+
+  IMin=0;
+  i=1;
+  while(i<len)
+  {
+    if(Buf[IMin]>Buf[i])
+    {
+      IMin=i;
+    }
+    i++;
+  }
+  return IMin;
+}
+
+void Gambar(TImage *Img,float *Buf,unsigned len)
+{
+  /* menggambar sinyal 
+
+  */
+  unsigned int Tg,Lb,i;
+  Tg=Img->Height;
+  Lb=Img->Width;
+
+  Img->Canvas->Pen->Color=clLime;
+  Img->Canvas->MoveTo(0,INT(((float)(255-Buf[0]-128)/255)*Tg));
+  for(i=1;i<len;i++)
+  {
+    Img->Canvas->LineTo(INT(((float)i/len)*Lb),
+                        INT(((float)(255-Buf[i]-128)/255)*Tg));
+  }
+
+}
+void GarisFrame(TImage *Img,unsigned Fr1,unsigned Fr2,
+                        unsigned M,unsigned len,TColor Cl)
+{
+  /* menggambar posisi frame
+  */
+
+  unsigned int Tg,Lb;
+
+  Tg=Img->Height;
+  Lb=Img->Width;
+
+  Img->Canvas->Pen->Color=Cl;
+  Img->Canvas->MoveTo((int)Fr1*M*Lb/len,0);
+  Img->Canvas->LineTo((int)Fr1*M*Lb/len,Tg);
+  Img->Canvas->MoveTo((int)Fr2*M*Lb/len,0);
+  Img->Canvas->LineTo((int)Fr2*M*Lb/len,Tg);
+
+}
+
+
+/**************** P E L A T I H A N******************/
+
+void  pelatihan_ucapan_kata(AnsiString NamaFile,AnsiString SimpanFile,unsigned pj_in,
+                            unsigned pj_hid,unsigned pj_out,float lr,float _error,
+                            unsigned jml_file,unsigned pj_sinyal,TLabel *S_MSE
+                            )
+{
+  /* Implementasi program pelatihan sinyal suara
+     K.Awal  : penimbang, codebook dan laporan pelatihan belum dibuat
+     K.Akhir : penimbang, codebook berisi informasi tentang ucapan kata
+               hasil pelatihan. laporan pelatihan dibuat.
+
+  */
+
+  /* Kamus Lokal */
+  extern ttitik *cendroit;
+  extern tparameter_lpc par_lpc;
+  extern tparameter_panjang_lpc par_pj_lpc;
+  extern tpelatihan_sinyal pelatihan_sinyal;
+  extern tjaringan jaringan;
+  TIniFile *pIniFile;
+  unsigned i,j,k;
+  AnsiString nama_total,nama_kata;
+
+
+  try
+  {
+
+    /*** melakukan alokasi memori dan inisialisasi ***/
+    /* mengisi nilai untuk parameter panjang  dan mengalokasikan
+       memori untuk parameter jaringan saraf propagasi balik
+    */
+    jaringan.pj_in=pj_in;
+    jaringan.pj_hid=pj_hid;
+    jaringan.pj_out=pj_out;
+    jaringan.lr=lr;
+    jaringan._error=_error;
+    alokasi_jaringan();
+
+    /* alokasi untuk pelatihan */
+    pelatihan_sinyal.pj_pelatihan=jml_file*jaringan.pj_out;
+    alokasi_pelatihan();
+
+
+    /* mengisi nilai parameter panjang dan mengalokasi memori
+       untuk parameter lpc
+    */
+    par_pj_lpc.N=SPUK_N;
+    par_pj_lpc.M=SPUK_M;
+    par_pj_lpc.p=SPUK_p;
+    par_pj_lpc.Q=SPUK_Q;
+    par_pj_lpc.panjang_sinyal=SPUK_pj;
+    alokasi_parameter_lpc();
+
+    /* alokasi memori untuk kuantisasi */
+    alokasi_parameter_kuantisasi(par_pj_lpc.panjang_sinyal,jaringan.pj_in);
+
+    /* melakukan inisialisasi terhadap hamming window */
+    init_hamming_window();
+
+    /*** Pengubahan wav ke ceptral terkuantisasi ***/
+    
+    nama_total=NamaFile;
+    for(i=0;i<jaringan.pj_out;i++)
+    {
+      if(nama_total.Pos(" "))
+      {
+        nama_kata=nama_total.SubString(1,nama_total.Pos(" ")-1);
+        nama_total.Delete(1,nama_total.Pos(" "));
+      }
+      else
+      {
+        nama_kata=nama_total;
+      }
+      for(j=0;j<jml_file;j++)
+      {
+
+        /* mengubah file wave menjadi koefisien ceptral dan disimpan sebagai
+           codebook
+        */
+        baca_file_wave(par_lpc.s,&(par_pj_lpc.panjang_sinyal),("..//Data//"+SimpanFile+"//Kata//"+
+                 nama_kata+IntToStr(j+1)+".wav").c_str());
+
+        par_pj_lpc.panjang_sinyal=pj_sinyal;
+        par_pj_lpc.L = (unsigned)(par_pj_lpc.panjang_sinyal-par_pj_lpc.N)/par_pj_lpc.M+1;
+        preemphasis(0.9375);
+        normalisasi();
+        pembentukan_frame();
+        hamming_window();
+        autocorelasi();
+        eliminasi();
+        koeflpc_ke_ceptral();
+        matrik_ke_vektor1(par_lpc.c,par_pj_lpc.L,par_pj_lpc.Q,par_lpc.s,&par_pj_lpc.panjang_sinyal);
+        tulis_file(par_lpc.s,(par_pj_lpc.panjang_sinyal),("..//Data//"+SimpanFile+"//Code Book//"+
+                  nama_kata+IntToStr(j+1)+".cbk").c_str());
+
+        /* mengubah koefisien ceptral menjadi koefisien ceptral yang
+           terkuantisasi
+        */
+        kuantisasi(par_lpc.s,par_pj_lpc.panjang_sinyal,jaringan.pj_in);
+        pengurutan_cendroit(jaringan.pj_in);
+        for(k=1;k<=jaringan.pj_in;k++)
+        {
+          /* pengisian input target data untuk pelatihan */
+          pelatihan_sinyal.X[jml_file*i+j+1][k]=cendroit[k].y; //
+        }
+        for(k=1;k<=jaringan.pj_out;k++)
+        {
+          /* pengisian target data untuk pelatihan */
+          if (i+1==k)
+          {
+            pelatihan_sinyal.T[jml_file*i+j+1][k]=1.0;
+          }
+          else
+          {
+            pelatihan_sinyal.T[jml_file*i+j+1][k]=0.0;
+          }
+        } //for k
+      } //for j
+    } //for i
+
+
+    /*** proses pelatihan sinyal ***/
+    inisialisasi_penimbang_dan_bias();
+    _error=proses_semua_pelatihan();berhenti=0;
+    while((_error>jaringan._error)&&(!berhenti))
+    {
+      _error=proses_semua_pelatihan();
+      Application->ProcessMessages();
+      S_MSE->Caption=FloatToStr(_error);
+    }
+
+    /*** penulisan laporan data pada berkas(format ini) ***/
+    pIniFile=new TIniFile(("..//Data//"+SimpanFile+"//Penimbang//"+
+                          SimpanFile+".ini").c_str());
+
+    /* laporan tentang kata */
+    pIniFile->WriteString("Files","Nama",SimpanFile.c_str());
+    pIniFile->WriteString("Files","Kata",NamaFile.c_str());
+    pIniFile->WriteInteger("Files","Jumlah Kata",jml_file);
+    pIniFile->WriteInteger("Files","Jumlah Codebook",par_pj_lpc.L*par_pj_lpc.Q);
+    pIniFile->WriteDateTime("Files","Tanggal",TDateTime().CurrentTime());
+
+    /* laporan tentang pelatihan*/
+    pIniFile->WriteInteger("Pelatihan","Jumlah Input",jaringan.pj_in);
+    pIniFile->WriteInteger("Pelatihan","Jumlah Hidden",jaringan.pj_hid);
+    pIniFile->WriteInteger("Pelatihan","Jumlah Output",jaringan.pj_out);
+    pIniFile->WriteFloat("Pelatihan","Learning Rate",lr);
+    pIniFile->WriteFloat("Pelatihan","Epsilon",jaringan._error);
+    pIniFile->WriteFloat("Pelatihan","MSE",_error);
+
+    delete pIniFile;
+
+
+    /*** penulisan penimbang kedalam file ***/
+    k=0;
+    for(i=1;i<=jaringan.pj_out+jaringan.pj_hid;i++)
+    {
+      for(j=1;j<=jaringan.pj_in+jaringan.pj_hid+jaringan.pj_out;j++)
+      {
+        par_lpc.s[k]=jaringan.W[i][j];
+        k++;
+      }
+
+      par_lpc.s[k]=jaringan.th[i];
+      k++;
+    }
+    tulis_file(par_lpc.s,k,("..//Data//"+SimpanFile+"//Penimbang//"+
+              SimpanFile+".dat").c_str());
+ }
+  __finally
+  {
+    /*** melakukan dealokasi memori ***/
+    /* dealokasi parameter lpc */
+    par_pj_lpc.L = (unsigned)(SPUK_pj-par_pj_lpc.N)/par_pj_lpc.M+1;
+    dealokasi_parameter_lpc();
+    /* dealokasi parameter jaringan saraf propagasi balik*/
+    dealokasi_jaringan();
+    /* dealokasi parameter pelatihan */
+    dealokasi_pelatihan();
+    /* dealokasi parameter kuantisasi */
+    dealokasi_parameter_kuantisasi(jaringan.pj_in);
+  }
+}
+
+
+/**************** P E N G E N A L A N******************/
+void  pengenalan_ucapan_kata(AnsiString NamaFile,TImage *Img,TPanel *Panel)
+{
+
+  /* Kamus Lokal */
+  extern tsinyal_digital sinyal_digital;
+  extern ttitik *cendroit;
+  extern tjaringan jaringan;
+  extern tparameter_lpc par_lpc;
+  extern tparameter_panjang_lpc par_pj_lpc;
+  unsigned p,p1;
+  unsigned i,j,k,l,m,n,L;
+  unsigned jml_file,jml_cbk;
+  unsigned *IndexFrame;
+  float **codebook,*distorsi;
+  float DistMin;
+  AnsiString NamaF,Nama,xx;
+  TIniFile *pIni;
+
+  try
+  {
+    /*** membaca laporan pelatihan dari berkas(format ini) dan melakukan inisialisasi dan alokasi memori ***/
+    /* membaca laporan pelatihan */
+    pIni=new TIniFile(("..//Data//"+NamaFile+"//Penimbang//"+
+                      NamaFile+".ini").c_str());
+    jaringan.pj_in=pIni->ReadInteger("Pelatihan","Jumlah Input",0);
+    jaringan.pj_hid=pIni->ReadInteger("Pelatihan","Jumlah Hidden",0);
+    jaringan.pj_out=pIni->ReadInteger("Pelatihan","Jumlah Output",0);
+    jaringan.lr=pIni->ReadFloat("Pelatihan","Learning Rate",0);
+    jaringan._error=pIni->ReadFloat("Pelatihan","Epsilon",0);
+
+    /* alokasi memori untuk jaringan saraf propagasi balik */
+    alokasi_jaringan();
+
+    /* alokasi memori untuk parameter lpc */
+    par_pj_lpc.N=SPUK_N;
+    par_pj_lpc.M=SPUK_M;
+    par_pj_lpc.p=SPUK_p;
+    par_pj_lpc.Q=SPUK_Q;
+    par_pj_lpc.panjang_sinyal=SPUK_pj;
+    alokasi_parameter_lpc();
+
+    /* alokasi memori untuk parameter kuantisasi */
+    alokasi_parameter_kuantisasi(par_pj_lpc.panjang_sinyal,jaringan.pj_in);
+
+    /* membuat handel untuk penyamplingan */
+    buat_handel_sampling(SPUK_Fs,SPUK_A);
+    /* melakukan inisialisasi untuk proses windowing */
+    init_hamming_window();
+
+
+    jml_file=pIni->ReadInteger("Files","Jumlah Kata",0);
+    jml_cbk=pIni->ReadInteger("Files","Jumlah CodeBook",0);
+
+    /* alokasi memori untuk codebook dan distorsi */
+    codebook=(float **)malloc(jaringan.pj_out*sizeof(float*));
+    distorsi=(float *)malloc(jaringan.pj_out*sizeof(float));
+    IndexFrame=(unsigned *)malloc(jaringan.pj_out*sizeof(unsigned));
+
+    for(i=0;i<jaringan.pj_out;i++)
+    {
+      codebook[i]=(float *)malloc(jml_file*jml_cbk*sizeof(float));
+    }
+     /*** melakukan pembacaan berkas codebook dan penimbang ***/
+    /* membaca codebook */
+    NamaF=pIni->ReadString("Files","Kata",0);
+    for(i=0;i<jaringan.pj_out;i++)
+    {
+      if(NamaF.Pos(" "))
+      {
+        Nama=NamaF.SubString(1,NamaF.Pos(" ")-1);
+        NamaF.Delete(1,NamaF.Pos(" "));
+      }
+      else
+      {
+        Nama=NamaF;
+      }
+      for(j=0;j<jml_file;j++)
+      {
+        baca_file(par_lpc.s,&(par_pj_lpc.panjang_sinyal),("..//Data//"+
+                  NamaFile+"//Code Book//"+Nama+IntToStr(j+1)+".cbk").c_str()
+                  );
+        for(k=0;k<jml_cbk;k++)
+        {
+          codebook[i][j*jml_cbk+k]=par_lpc.s[k];
+        }
+      }
+    }
+
+    /*  membaca penimbang */
+    baca_file(par_lpc.s,&(par_pj_lpc.panjang_sinyal),("..//Data//"+NamaFile+
+             "//Penimbang//"+NamaFile+".dat").c_str()
+             );
+    k=0;
+    for(i=1;i<=jaringan.pj_hid+jaringan.pj_out;i++)
+    {
+      for(j=1;j<=jaringan.pj_in+jaringan.pj_hid+jaringan.pj_out;j++)
+      {
+        jaringan.W[i][j]=par_lpc.s[k];
+        k++;
+      }
+      jaringan.th[i]=par_lpc.s[k];
+      k++;
+    }
+
+    /*** melakukan loop selamanya untuk melakukan proses pengenalan ***/
+
+    berhenti=0;
+    //while(!berhenti)
+    {
+      Img->Canvas->FillRect(Img->ClientRect);
+      /* melakukan penyamplingan */
+      /****************************************/
+      baca_file_wave(par_lpc.s,&(sinyal_digital.panjang),"..\\Evaluasi\\suara\\delapan.wav");
+      /****************************************/
+
+      sampling(1000);
+
+      for(i=0;i<sinyal_digital.panjang;i++)
+      {
+        par_lpc.s[i]=(float)sinyal_digital.s[i]-128.0;
+      }
+      par_pj_lpc.panjang_sinyal=sinyal_digital.panjang;
+      Application->ProcessMessages();
+      Gambar(Img,par_lpc.s,par_pj_lpc.panjang_sinyal);
+      Application->ProcessMessages();
+
+      /* pengekstraksian fitur-fitur sinyal suara */
+      par_pj_lpc.L = (unsigned)(par_pj_lpc.panjang_sinyal-par_pj_lpc.N)/par_pj_lpc.M+1;
+      preemphasis(0.9375);
+      normalisasi();
+      pembentukan_frame();
+      hamming_window();
+      autocorelasi();
+      eliminasi();
+      koeflpc_ke_ceptral();
+
+      /* menghitung distorsi sinyal hasil penyamplingan dan dibandingkan
+         dengan codebook, sehingga diperoleh sinyal yang memiliki distor-
+         si terkecil sebagai kesimpulan pertama
+      */
+      L=(unsigned)jml_cbk/par_pj_lpc.Q;
+      for(i=0;i<jaringan.pj_out;i++)
+      {
+        DistMin=10000000.0;
+        for(j=0;j<jml_file;j++)
+        {
+          for(m=0;m<par_pj_lpc.L-L;m++)
+          {
+            n=0;distorsi[i]=0.0;
+            for(l=m;l<L+m;l++)
+            {
+              for(k=1;k<=par_pj_lpc.Q;k++)
+              {
+                distorsi[i]=distorsi[i]+(codebook[i][n+j*jml_cbk]-par_lpc.c[l][k])*(codebook[i][n+j*jml_cbk]-par_lpc.c[l][k]);
+                n++;
+              }//for k
+            }// for l
+            if(DistMin>distorsi[i])
+            {
+              DistMin=distorsi[i];
+              IndexFrame[i]=m;
+            }
+          }//for m
+          distorsi[i]=DistMin;
+        }// for j
+      }//for i
+
+      m=IndexFrame[IMIN(distorsi,jaringan.pj_out)];
+      GarisFrame(Img,m,m,par_pj_lpc.M,sinyal_digital.panjang,clRed);
+      Application->ProcessMessages();     
+      n=0;
+      for(l=m;l<L+m;l++)
+      {
+        for(k=1;k<=par_pj_lpc.Q;k++)
+        {
+          par_lpc.s[n]=par_lpc.c[l][k];
+          n++;
+        }
+      }
+
+      /* mengubah koefisien ceptral menjadi koefisien ceptral yang
+         terkuantisasi
+      */
+      
+      kuantisasi(par_lpc.s,n,jaringan.pj_in);
+      pengurutan_cendroit(jaringan.pj_in);
+      for(i=1;i<jaringan.pj_in;i++)
+      {
+        jaringan.O[i+jaringan.pj_hid+jaringan.pj_out]=(float)cendroit[i].y;
+      }
+
+      /* melakukan aktivasi terhadap ceptral hasil kuantisasi
+         untuk menghasilkan kesimpulan kedua
+      */
+      aktivasi_jaringan();
+      i=1;
+      p1=0;p=0;
+      while((i<=jaringan.pj_out)&&(p1!=-1)&&(p1!=2))
+      {
+        if(jaringan.O[i]<0.5)
+        {
+        }
+        else if(jaringan.O[i]>0.5)
+        {
+          p1++;
+          p=i;
+        }
+        else
+        {
+          p1=-1;
+        }
+        i++;
+      }
+
+      /* pengambilan keputusan */
+      if((IMIN(distorsi,jaringan.pj_out)+1==p))
+      {
+        if((distorsi[IMIN(distorsi,jaringan.pj_out)])<26)
+        {
+          Panel->Caption=p-1;
+          sndPlaySound("Ding.wav",0);
+        }
+      }
+
+    }// FOREVER
+
+  }
+  __finally
+  {
+    /*** dealokasi memori ***/
+    /* dealokasi parameter jaringan syaraf propagasi balik */
+    dealokasi_jaringan();
+    /* dealokasi memori parameter kuantisasi */
+    dealokasi_parameter_kuantisasi(pIni->ReadInteger("Pelatihan","Jumlah Input",0));
+
+    /* dealokasi memori parameter lpc */
+    par_pj_lpc.L = (unsigned)(SPUK_pj-par_pj_lpc.N)/par_pj_lpc.M+1;
+    dealokasi_parameter_lpc();
+    delete pIni;
+
+    /* dealokasi memori parameter codebook dan distorsi */
+    for(i=0;i<jaringan.pj_out;i++)
+    {
+      free(codebook[i]);
+    }
+    free(codebook);
+    free(distorsi);
+    free(IndexFrame);
+
+    /* menghancurkan handel penyamplingan */
+    hancur_handel_sampling();
+  }
+
+}
+
+/**************** A N A L I S I S ******************/
+
+void analisis_pendeteksian_sinyal_suara(TImage *Img1,TImage *Img2,float buf1[],float buf2[],
+                                        TLabel *lb1,TLabel *lb2,TLabel *lb3,unsigned Start,
+                                        unsigned End,unsigned panjang,char energi,char periodik,
+                                        char mlr)
+{
+  unsigned Frm,Frm1,L,l;
+  float **x;
+
+  extern tparameter_lpc   par_lpc;
+  extern tparameter_panjang_lpc par_pj_lpc;
+
+  // alokasi
+
+  L=End-Start+1;
+  try
+  {
+    par_pj_lpc.N=SPUK_N;
+    par_pj_lpc.M=SPUK_M;
+    par_pj_lpc.p=SPUK_p;
+    par_pj_lpc.Q=SPUK_Q;
+    par_pj_lpc.panjang_sinyal=SPUK_pj*4;
+    alokasi_parameter_lpc();
+    init_hamming_window();
+
+    Img2->Canvas->FillRect(Img2->ClientRect);
+    Gambar(Img2,buf2,panjang);
+    x=(float **)malloc(L*sizeof(float*));
+    for(l=0;l<L;l++)
+    {
+      x[l]=(float *)malloc(par_pj_lpc.N*sizeof(float));
+    }
+
+    par_pj_lpc.L=(unsigned)(panjang-par_pj_lpc.N)/par_pj_lpc.M+1;
+    par_pj_lpc.panjang_sinyal=panjang;
+    salin_vektor(par_lpc.s,buf1,panjang);
+    preemphasis(0.9375);
+    normalisasi();
+    pembentukan_frame();
+    hamming_window();
+    for(l=0;l<L;l++)
+    {
+      salin_vektor(x[l],par_lpc.x[l+Start],par_pj_lpc.N);
+    }
+
+    salin_vektor(par_lpc.s,buf2,panjang);
+    preemphasis(0.9375);
+    normalisasi();
+    pembentukan_frame();
+    hamming_window();
+    Frm=0;
+    if(energi) //Energi
+    {
+      Frm=rata2_energi(par_lpc.x,par_pj_lpc.L,par_pj_lpc.N);
+    }
+    if(periodik) //Periodicity
+    {
+      Frm1=periodicity(par_lpc.x,par_pj_lpc.L,par_pj_lpc.N);
+      if(Frm<Frm1)
+      {
+        Frm=Frm1;
+      }
+    }
+    if(mlr) //MLR
+    {
+      Frm1=MLR(par_lpc.x,par_pj_lpc.L,x,L,par_pj_lpc.N);
+      if(Frm<Frm1)
+      {
+        Frm=Frm1;
+      }
+    }
+    GarisFrame(Img2,Frm,Frm+L-1,par_pj_lpc.M,panjang,clRed);
+    lb1->Caption=IntToStr(Frm)+" - "+IntToStr(Frm+L-1);
+    lb2->Caption=FloatToStr(fabs((float)Start-(float)Frm));
+
+    if(fabs((float)Start-(float)Frm)<L-1)
+    {
+      lb3->Caption=Format("%.2f %s",ARRAYOFCONST(( (((float)L-1.0-fabs(((float)Start-(float)Frm)))*100.0)/((float)L-1.0),"%")));
+    }
+    else
+    {
+      lb3->Caption="0%";
+    }
+  }
+  __finally
+  {
+    par_pj_lpc.L=(unsigned)(SPUK_pj*4-par_pj_lpc.N)/par_pj_lpc.M+1;
+    dealokasi_parameter_lpc();
+    for(l=0;l<L;l++)
+    {
+      free(x[l]);
+    }
+    free(x);
+
+  }
+
+}
+
+
