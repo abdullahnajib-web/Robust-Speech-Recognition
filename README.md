@@ -8,7 +8,7 @@ Once the detection and feature extraction phases are complete, the system procee
 Clustering techniques are employed to facilitate vector quantization, with the Linde Buzo Gray (LBG) algorithm taking charge of this operation. 
 Finally, the system concludes with a decision-making and comparison stage, implemented through a backpropagation neural network method.
 
-# AAA
+# Architecture
 
 ![Arst-SPUK](https://github.com/abdullahnajib-web/Robust-Speech-Recognition/assets/85467959/427df5ca-fb8b-469f-9a3a-46ae4dc11e64)
 
